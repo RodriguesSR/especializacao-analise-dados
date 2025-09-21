@@ -3,7 +3,7 @@
 Repositório de códigos, dados e relatórios da especialização.  
 
 ## Disciplinas
-- Análise Exploratória e Visualização de Dados (especializacao-analise-dados/AEVD/)
+- Análise Exploratória e Visualização de Dados → `especializacao-analise-dados/AEVD/`
 
 ---
 
@@ -11,4 +11,4 @@ Repositório de códigos, dados e relatórios da especialização.
 Repository of codes, data, and reports from the specialization.
 
 ## Courses
-- Exploratory Data Analysis and Data Visualization (especializacao-analise-dados/AEVD/)
+- Exploratory Data Analysis and Data Visualization → `especializacao-analise-dados/AEVD/`
