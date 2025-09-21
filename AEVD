@@ -1,0 +1,10 @@
+# Análise Exploratória e Visualização de Dados
+
+## Estrutura
+- `AEVD/trabalho_1/` — Trabalho 01
+- `AEVD/trabalho_2/` — Trabalho 02
+- `AEVD/trabalho_3/` — Trabalho 03
+
+## Como reproduzir os arquivos em R
+1. R >= 4.x e RStudio (opcional)
+2. Pacotes: `tidyverse`, `e1071`, `ggplot2`, `quarto`, `tinytex`
