@@ -6,9 +6,9 @@ Esta pasta reúne os trabalhos desenvolvidos na disciplina **Análise Explorató
 
 ## 📂 Estrutura dos trabalhos
 
-- **Trabalho 01** → `AEVD/trabalho_1/`
-- **Trabalho 02** → `AEVD/trabalho_2/`
-- **Trabalho 03** → `AEVD/trabalho_3/`
+- **Trabalho 01** → `AEVD/Atividade_1/`
+- **Trabalho 02** → `AEVD/Atividade_2/`
+- **Trabalho 03** → `AEVD/Atividade_3/`
 
 Cada subpasta contém:
 - Scripts em **R** (`.R`)
