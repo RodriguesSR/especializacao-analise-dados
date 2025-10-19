@@ -1,0 +1,593 @@
+---
+title: "Trabalho_03"
+author: "Silvana Rodrigues"
+date: "`r format(Sys.Date(), '%%m%Y')`"
+format:
+  docx:
+    toc: true
+    number-sections: true
+execute:
+  echo: true      # mostra o código nos blocos
+  warning: false  
+  message: false  
+lang: pt-BR
+---
+
+# Carregando as bibliotecas
+
+```{r}
+library(readxl)
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(scales)
+library(rlang)
+library(tibble)
+library(data.table)
+library(gt)
+library(conflicted)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::lag)
+```
+
+# Caminhos dos arquivos
+
+```{r}
+
+path_eja  <- "C:/Users/Silvana/OneDrive/Students/Especialização em Análise de dados/TCC/2024_resultados_censo_escolar_final_anexo_I.xlsx"
+
+path_sup  <- "C:/Users/Silvana/OneDrive/Students/Especialização em Análise de dados/TCC/sinopse_educacao_superior_2024/Sinopse_Educação_Superior_2024/sinopse_Educação_Superior_Municipio_2024.xlsx"
+
+path_enem <- "C:/Users/Silvana/OneDrive/Students/Especialização em Análise de dados/TCC/microdados_enem_2024/DADOS/RESULTADOS_2024.csv"
+
+```
+
+# Leitura e organização dos dados
+
+## Censo Escolar - EJA Ensino Médio
+
+```{r}
+# --- Censo Escolar — EJA no Ensino Médio (SEEDUC/RJ) --------------------
+# Saída: eja_one [municipio, eja_em_total] + (depois) cod_mun via dicionário do Superior
+
+# 1. função para normalizar nomes (usa em todas as bases)
+norm_nome <- function(x) {
+  x |>
+    stringr::str_squish() |>
+    toupper() |>
+    iconv(to = "ASCII//TRANSLIT")
+}
+
+# 2. Ler o bloco do RJ (linhas 21684:22241) e colunas A:N (N = 14ª, EJA Médio)
+rj_raw <- readxl::read_excel(
+  path = path_eja,
+  sheet = 1,
+  range = "A21684:N22241",   # A…N (14 colunas)
+  col_names = FALSE,
+  col_types = c("guess", "text", rep("guess", 12))  # B forçado texto
+)
+
+# 3. Coluna B mistura MUNICÍPIO (linhas-título) e DEPENDÊNCIA (linhas abaixo)
+colB_chr <- rj_raw[[2]] |> as.character() |> stringr::str_squish()
+eh_dep   <- stringr::str_detect(colB_chr, stringr::regex("^(Estadual|Municipal)", ignore_case = TRUE))
+
+# 4. Vetores auxiliares fora do mutate
+municipio_vec <- ifelse(!eh_dep & !is.na(colB_chr) & nzchar(colB_chr), colB_chr, NA_character_)
+dep_vec       <- ifelse(eh_dep, colB_chr, NA_character_)
+
+# 5. Construir DF com município propagado para baixo
+df <- rj_raw |>
+  mutate(municipio = municipio_vec, dep = dep_vec) |>
+  tidyr::fill(municipio, .direction = "down")
+
+# 6. Manter apenas “Estadual Urbana” e “Estadual Rural”
+df_est <- df |>
+  mutate(dep_norm = stringr::str_squish(as.character(dep))) |>
+  dplyr::filter(dep_norm %in% c("Estadual Urbana", "Estadual Rural"))
+
+# 7. Extrair EJA Médio (coluna N = índice 14)
+idx_eja_medio <- 14L
+eja_col_num   <- suppressWarnings(as.numeric(df_est[[idx_eja_medio]]))
+
+# 8. Agregar por município e normalizar nome  → eja_one
+eja_one <- df_est |>
+  transmute(
+    municipio = norm_nome(municipio), # nome normalizado
+    eja_medio = eja_col_num
+  ) |>
+  group_by(municipio) |>
+  summarise(eja_em_total = sum(eja_medio, na.rm = TRUE), .groups = "drop") |>
+  filter(!stringr::str_detect(municipio, stringr::regex("^TOTAL", ignore_case = TRUE)))
+
+# 9. Checagens
+glimpse(eja_one)
+head(eja_one, 10)
+
+```
+
+## Censo da Educação Superior
+
+```{r}
+# --- Censo Superior — Ingressantes Públicos (RJ, por município) ---------
+# Saída:
+#   sup_one  [cod_mun, municipio, ingr_publico]  (municipio normalizado)
+#   dic_mun  [cod_mun, municipio]                (dicionário p/ joins)
+
+# 1. função para normalizar nomes (usa em todas as bases)
+norm_nome <- function(x) {
+  x |>
+    stringr::str_squish() |>
+    toupper() |>
+    iconv(to = "ASCII//TRANSLIT")
+}
+
+# 2. Descobrir/ler a aba 7.1
+sheet_ing <- readxl::excel_sheets(path_sup) |>
+  (\(s) s[grep("^\\s*7\\.1\\b|Ingressantes.*Matr[ií]culas.*Concluintes", s, ignore.case = TRUE)])() |>
+  (\(x) x[1])()
+sup_raw <- read_excel(path = path_sup, sheet = sheet_ing)
+
+# 2) Mapear colunas por posição (A,B,C,(D?),N,O,P) e montar DF
+tem_cod <- ncol(sup_raw) >= 4 && any(grepl("C[oó]digo.*Munic", names(sup_raw), ignore.case = TRUE))
+
+sup_df <- tibble::tibble(
+  uf        = as.character(sup_raw[[2]]),
+  municipio = norm_nome(as.character(sup_raw[[3]])), # normalizado
+  cod_mun   = if (tem_cod) as.character(sup_raw[[4]]) else NA_character_,
+  ingr_fed  = suppressWarnings(as.numeric(sup_raw[[14]])),      # N
+  ingr_est  = suppressWarnings(as.numeric(sup_raw[[15]])),      # O
+  ingr_mun  = suppressWarnings(as.numeric(sup_raw[[16]]))       # P
+)
+
+# 3. RJ, remover “Total…”, somar público e padronizar tipos
+sup_rj <- sup_df |>
+  filter(uf == "Rio de Janeiro",
+         !str_detect(municipio, regex("^TOTAL", ignore_case = TRUE))) |>
+  mutate(
+    cod_mun      = as.character(cod_mun),
+    ingr_publico = rowSums(across(c(ingr_fed, ingr_est, ingr_mun)), na.rm = TRUE)
+  ) |>
+  select(cod_mun, municipio, ingr_publico)
+
+# 4. Objetos padronizados
+sup_one <- sup_rj |>
+  group_by(cod_mun, municipio) |>
+  summarise(ingr_publico = sum(ingr_publico, na.rm = TRUE), .groups = "drop")
+
+dic_mun <- sup_one |>
+  filter(!is.na(cod_mun)) |>
+  distinct(cod_mun, municipio) # dicionário com nome normalizado
+
+# 5. Checagens
+glimpse(sup_one)
+head(sup_one, 10)
+
+```
+
+## Microdados do ENEM
+
+```{r}
+# --- ENEM 2024 — Participantes por município (Rede ESTADUAL / RJ) -------
+# Saída:
+#   enem_one            [cod_mun, participantes_enem]
+#   enem_part_mun_nome  [municipio, participantes_enem] (nome normalizado)
+
+# 1. Ler os dados considerando as colunas de interesse
+# D=4  CO_MUNICIPIO_ESC (código IBGE)
+# L=12 NO_MUNICIPIO_ESC (nome do município da escola)
+# N=14 SG_UF_ESC
+# H=8  TP_DEPENDENCIA_ADM_ESC (1=fed, 2=est, 3=mun, 4=priv, 5=esp)
+
+enem_dt <- fread(
+  input        = path_enem,
+  select       = c(4, 12, 14, 8),   # D, L, N, H
+  col.names    = c("cod_mun", "municipio_raw", "uf", "tp_dep"),
+  showProgress = TRUE
+)
+
+# 2. Filtrar RJ e REDE ESTADUAL
+enem_rj_est <- enem_dt[uf == "RJ" & (is.na(tp_dep) | tp_dep == 2)]
+
+# 3. Versão por CÓDIGO (robusta)
+enem_one <- enem_rj_est[ , .N, by = .(cod_mun)][order(cod_mun)]
+setnames(enem_one, c("cod_mun","N"), c("cod_mun","participantes_enem"))
+enem_one[, cod_mun := as.character(cod_mun)]
+enem_one <- as_tibble(enem_one)
+
+# 4. Versão por NOME (para casar direto com EJA/Superior por nome)
+enem_part_mun_nome <- enem_rj_est[
+  , .N, by = .(municipio_raw)
+][order(municipio_raw)]
+setnames(enem_part_mun_nome, c("municipio_raw","N"), c("municipio_raw","participantes_enem"))
+enem_part_mun_nome <- as_tibble(enem_part_mun_nome) |>
+  mutate(municipio = norm_nome(municipio_raw)) |>
+  select(municipio, participantes_enem)
+
+# 5. Checagens
+glimpse(enem_one)
+glimpse(enem_part_mun_nome)
+head(enem_part_mun_nome, 10)
+
+```
+
+## Integração - Base única do funil (por código do município)
+
+```{r}
+# 1. Anexar cod_mun à EJA usando o dicionário do Superior (por nome mormalizada)
+eja_one_cod <- eja_one |>
+  left_join(dic_mun, by ="municipio") |>
+  mutate(cod_mun = as.character(cod_mun))
+
+# 2. Prepara bases únicas por nome (garantir 1 linha por município - 92 no total)
+eja_one_n <- eja_one_cod |>
+  group_by(municipio) |>
+  summarise(eja_em_total = sum(eja_em_total, na.rm = TRUE),
+            cod_mun = dplyr::first(na.omit(cod_mun)), .group = "drops")
+
+sup_one_n <- sup_one |>
+  group_by(municipio) |>
+  summarise(ingr_publico = sum(ingr_publico, na.rm = TRUE),
+            cod_mun_sup = dplyr::first(na.omit(cod_mun)), .group = "drops")
+
+enem_one_n <- enem_part_mun_nome |>
+  group_by(municipio) |>
+  summarise(participantes_enem = sum(participantes_enem, na.rm = TRUE), .group = "drops")
+
+# 3. Junção final por NOME normalizado (essa decição ocorreu pq a planilha do censo escolar NÃO possui os códigos dos municipios)
+base <- eja_one_n |>
+  left_join(sup_one_n,  by = "municipio") |>
+  left_join(enem_one_n, by = "municipio") |>
+  mutate(
+    # escolher um código prioritário: o da EJA (derivado do dicionário). Se faltar, usar do superior.
+    cod_mun = dplyr::coalesce(cod_mun, cod_mun_sup),
+    ingr_publico       = replace_na(ingr_publico, 0),
+    participantes_enem = replace_na(participantes_enem, 0)
+  ) |>
+  select(cod_mun, municipio, eja_em_total, participantes_enem, ingr_publico) |>
+  mutate(
+    engaj_enem        = ifelse(eja_em_total > 0, 100 * participantes_enem / eja_em_total, NA_real_),
+    oferta_sobre_enem = ifelse(participantes_enem > 0, 100 * ingr_publico / participantes_enem, NA_real_),
+    oferta_sobre_eja  = ifelse(eja_em_total > 0, 100 * ingr_publico / eja_em_total, NA_real_)
+  )
+
+glimpse(base)
+summary(base[, c("eja_em_total","participantes_enem","ingr_publico","engaj_enem","oferta_sobre_enem","oferta_sobre_eja")])
+
+# 4. Diagnóstico de casamento (importate devido a integração por nome)
+anti_eja_sup <- eja_one_n |> anti_join(sup_one_n, by = "municipio")
+anti_sup_eja <- eja_one_n |> anti_join(eja_one_n, by = "municipio")
+anti_eja_enem <- eja_one_n |> anti_join(enem_one_n, by = "municipio")
+
+anti_eja_sup; anti_sup_eja; anti_eja_enem #deve ficar vazio
+```
+
+# Visualização dos dados
+
+```{r}
+
+# 1. Criação de paleta simples
+base_theme <- theme_classic(base_size = 15) +
+  theme(painel.grid.miror = element_blank())
+
+# 2. Função barra top-N em log 10 (melhora a visualização)
+plot_top_log10 <- function(df, var, n = 10, title = "", ylab = "") {
+  v <- rlang::ensym(var)
+
+  df_top <- df %>%
+    dplyr::filter(!!v > 0) %>%
+    dplyr::slice_max(!!v, n = n) %>%
+    dplyr::mutate(lbl = scales::label_number(big.mark = ".", decimal.mark = ",")(!!v))
+
+  ymax <- max(df_top[[rlang::as_name(v)]], na.rm = TRUE)
+
+  ggplot2::ggplot(df_top, ggplot2::aes(forcats::fct_reorder(municipio, !!v), !!v)) +
+    ggplot2::geom_col(width = 0.7) +
+    # rótulo fora da barra usando multiplicador (bom para escala log)
+    ggplot2::geom_text(
+      ggplot2::aes(y = (!!v) * 1.5, label = lbl),
+      hjust = 0, size = 3
+    ) +
+    ggplot2::coord_flip(clip = "off") +
+    ggplot2::scale_y_log10(
+      labels = scales::label_number(big.mark = ".", decimal.mark = ","),
+      expand = ggplot2::expansion(mult = c(0.02, 0.10))
+    ) +
+    ggplot2::expand_limits(y = ymax * 1.75) +
+    ggplot2::labs(
+      title = title,
+      subtitle = "Eixo Y em escala log10",
+      x = NULL, y = ylab
+    ) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(
+      panel.grid.minor = ggplot2::element_blank(),
+      plot.margin = ggplot2::margin(10, 110, 10, 10)  # margem direita maior
+    )
+}
+
+# 3. Função dispersão em log-log
+plot_scatter_loglog <- function(df, xvar, yvar, title = "", xlab = "", ylab = "") {
+  x <- ensym(xvar); y <- ensym(yvar)
+
+  df_xy <- df %>% filter(!!x > 0, !!y > 0)   # remove zeros para log10
+
+  ggplot(df_xy, aes(!!x, !!y)) +
+    geom_point(alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, linewidth = 0.7) +
+    scale_x_log10(labels = label_number(big.mark=".", decimal.mark=",")) +
+    scale_y_log10(labels = label_number(big.mark=".", decimal.mark=",")) +
+    labs(title = title,
+         subtitle = "Ambos os eixos em escala log10",
+         x = xlab, y = ylab) +
+    base_theme
+}
+
+# 3. TOP 10 em EJA-EM (volume absoluto)
+plot_top_log10(
+  base, eja_em_total, n = 10,
+  title = "Top 10 municípios do RJ em EJA-EM",
+  ylab = "EJA_EM (matrículas/concluintes)"
+)
+
+# 3. TOP 10 em Participantes do ENEM (rede estadual)
+plot_top_log10(
+  base, participantes_enem, n = 10,
+  title = "Top 10 municípios do RJ em participantes do ENEM (rede estadual)",
+  ylab = "Participantes ENEM"
+)
+
+# 4. TOP 10 em ingressantes em IES públicas
+plot_top_log10(
+  base, ingr_publico, n = 10,
+  title = "Top 10 municípios do RJ em ingressantes (IES públicas)",
+  ylab = "Ingressantes em IES públicas"
+)
+
+# 5. TOP 10 em Engajamento EJA - ENEM (participantes por 100 EJA-EM)
+plot_top_log10(
+  base, engaj_enem, n = 10,
+  title = "Maior engajamento EJA - ENEM por 100 EJA-ENEM",
+  ylab = "Participantes ENEM por 100 EJA-ENEM"
+)
+
+# 6. TOP 10 em Engajamento EJA - ENEM (participantes por 100 EJA-EM considerando no minimo MIn_EJA matrículas)
+# definir corte pelo 25º percentil
+MIN_EJA <- as.integer(quantile(base$eja_em_total, 0.25, na.rm = TRUE))
+
+# conferir quantos municípios ficam fora/dentro
+sum(base$eja_em_total < MIN_EJA, na.rm = TRUE)   # fora
+sum(base$eja_em_total >= MIN_EJA, na.rm = TRUE)  # dentro
+
+# refazer o top de engajamento com o novo corte
+eng_base <- base %>% filter(eja_em_total >= MIN_EJA, engaj_enem > 0)
+plot_top_log10(eng_base, engaj_enem, n = 10,
+               title = paste0("Maior engajamento EJA → ENEM (EJA≥", MIN_EJA, ")"),
+               ylab  = "Participantes ENEM por 100 EJA-EM")
+
+# 7. Dispersão: EJA-EM x Participantes ENEM
+plot_scatter_loglog(
+  base, eja_em_total, participantes_enem,
+  title = "Relação entre EJA-EM e participantes do ENEM (rede estadual)",
+  xlab  = "EJA-EM (matrículas/concluintes)",
+  ylab  = "Participantes ENEM"
+)
+
+# 8. Dispersão: Participantes ENEM x Ingressantes em IES públicas
+plot_scatter_loglog(
+  base, participantes_enem, ingr_publico,
+  title = "ENEM (rede estadual) × Ingressantes em IES públicas",
+  xlab  = "Participantes ENEM",
+  ylab  = "Ingressantes (públicas)"
+)
+```
+
+# Tabelas
+
+## Funções suporte
+
+```{r}
+gt_basic <- function(df, title = NULL, subtitle = NULL) {
+  gt::gt(df) |>
+    gt::tab_header(
+      title    = gt::md(ifelse(is.null(title), "", title)),
+      subtitle = gt::md(ifelse(is.null(subtitle), "", subtitle))
+    ) |>
+    gt::opt_row_striping() |>
+    gt::tab_options(
+      table.font.size = gt::px(13),
+      data_row.padding = gt::px(4)
+    )
+}
+```
+
+## Tabela geral
+
+```{r}
+# --- Resumo descritivo (robusto, sem pivot_longer) ---------------------------
+library(dplyr)
+library(gt)
+
+summ_stats <- function(x) {
+  c(
+    n       = sum(!is.na(x)),
+    media   = mean(x, na.rm = TRUE),
+    mediana = median(x, na.rm = TRUE),
+    dp      = sd(x, na.rm = TRUE),
+    p90     = unname(quantile(x, 0.90, na.rm = TRUE)),
+    max     = max(x, na.rm = TRUE)
+  )
+}
+
+resumo <- dplyr::bind_rows(
+  `EJA-EM`                                = as.list(summ_stats(base$eja_em_total)),
+  `Participantes ENEM (rede estadual)`    = as.list(summ_stats(base$participantes_enem)),
+  `Ingressantes IES públicas (total)`     = as.list(summ_stats(base$ingr_publico)),
+  `Engajamento (ENEM por 100 EJA)`        = as.list(summ_stats(base$engaj_enem)),
+  `Ingressantes por 100 ENEM`             = as.list(summ_stats(base$oferta_sobre_enem)),
+  `Ingressantes por 100 EJA`              = as.list(summ_stats(base$oferta_sobre_eja)),
+  .id = "variavel"
+)
+
+# garantir tipos numéricos (algumas versões do dplyr podem devolver character)
+resumo <- resumo %>%
+  mutate(
+    n       = as.integer(n),
+    media   = as.numeric(media),
+    mediana = as.numeric(mediana),
+    dp      = as.numeric(dp),
+    p90     = as.numeric(p90),
+    max     = as.numeric(max)
+  )
+
+# Tabela gt formatada
+resumo_gt <-
+  gt::gt(resumo) |>
+  gt::tab_header(
+    title    = gt::md("Resumo descritivo — RJ (municípios)"),
+    subtitle = gt::md("n, média, mediana, desvio-padrão, p90 e máximo")
+  ) |>
+  gt::opt_row_striping() |>
+  gt::tab_options(
+    table.font.size  = gt::px(13),
+    data_row.padding = gt::px(4)
+  ) |>
+  gt::fmt_number(columns = n, decimals = 0, sep_mark = ".", dec_mark = ",") |>
+  gt::fmt_number(columns = c(media, mediana, dp, p90, max),
+                 decimals = 1, sep_mark = ".", dec_mark = ",") |>
+  gt::cols_label(
+    variavel = "Indicador", n = "n",
+    media = "Média", mediana = "Mediana",
+    dp = "DP", p90 = "P90", max = "Máx"
+  )
+
+resumo_gt
+
+
+```
+
+## Tabela Top 10
+
+```{r}
+N_TOP <- 10    # mude para 15 se quiser
+
+mk_top <- function(df, var, n = 10, titulo){
+  v <- rlang::ensym(var)
+  total <- sum(df[[rlang::as_name(v)]], na.rm = TRUE)
+
+  tab <- df |>
+    dplyr::filter(!!v > 0) |>
+    dplyr::transmute(
+      municipio,
+      valor = !!v,
+      share = (!!v) / total
+    ) |>
+    dplyr::slice_max(valor, n = n) |>
+    dplyr::arrange(dplyr::desc(valor))
+
+  gt_basic(tab, title = titulo) |>
+    gt::fmt_number(columns = valor, decimals = 0, sep_mark = ".", dec_mark = ",") |>
+    gt::fmt_percent(columns = share, decimals = 1, dec_mark = ",") |>
+    gt::cols_label(municipio = "Município", valor = "Valor", share = "% do total")
+}
+
+top_eja_gt  <- mk_top(base, eja_em_total,       N_TOP, "Top municípios — EJA-EM")
+top_enem_gt <- mk_top(base, participantes_enem, N_TOP, "Top municípios — Participantes ENEM (rede estadual)")
+top_ing_gt  <- mk_top(base, ingr_publico,       N_TOP, "Top municípios — Ingressantes IES públicas")
+
+# Engajamento com corte mínimo para estabilidade das taxas
+MIN_EJA <- 300
+top_eng_gt <- base |>
+  dplyr::filter(eja_em_total >= MIN_EJA, engaj_enem > 0) |>
+  mk_top(engaj_enem, N_TOP,
+         paste0("Top municípios — Engajamento EJA→ENEM (EJA≥", MIN_EJA, ")"))
+
+top_eja_gt
+top_enem_gt
+top_ing_gt
+top_eng_gt
+```
+
+## Correção entre variáveis do funil
+
+```{r}
+
+# =============== 3) CORRELAÇÃO (Pearson) ===============
+vars_cor <- base |>
+  dplyr::select(eja_em_total, participantes_enem, ingr_publico,
+                engaj_enem, oferta_sobre_enem, oferta_sobre_eja)
+
+cor_mat <- round(cor(vars_cor, use = "pairwise.complete.obs"), 3)
+cor_df  <- as.data.frame(cor_mat) |>
+  tibble::rownames_to_column("Variável")
+
+gt_basic(cor_df, title = "Matriz de correlação (Pearson)") |>
+  gt::fmt_number(columns = -Variável, decimals = 3, dec_mark = ",", sep_mark = ".")
+
+```
+
+## Quadramtes nível x taxa (contagem e médias)
+
+```{r}
+
+# =============== 4) QUADRANTES (nível × taxa) ===============
+quad_tab <- base |>
+  dplyr::filter(eja_em_total > 0, engaj_enem > 0) |>
+  dplyr::mutate(
+    x_med = median(eja_em_total, na.rm = TRUE),
+    y_med = median(engaj_enem,   na.rm = TRUE),
+    quadrante = dplyr::case_when(
+      eja_em_total >= x_med & engaj_enem >= y_med ~ "Alto estoque • Alta taxa",
+      eja_em_total >= x_med & engaj_enem <  y_med ~ "Alto estoque • Baixa taxa",
+      eja_em_total <  x_med & engaj_enem >= y_med ~ "Baixo estoque • Alta taxa",
+      TRUE                                       ~ "Baixo estoque • Baixa taxa"
+    )
+  ) |>
+  dplyr::group_by(quadrante) |>
+  dplyr::summarise(
+    n        = dplyr::n(),
+    eja_med  = mean(eja_em_total, na.rm = TRUE),
+    enem_med = mean(participantes_enem, na.rm = TRUE),
+    ing_med  = mean(ingr_publico, na.rm = TRUE),
+    eng_med  = mean(engaj_enem, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  dplyr::arrange(dplyr::desc(n))
+
+gt_basic(quad_tab, title = "Quadrantes — nível (EJA) × taxa (engajamento)") |>
+  gt::fmt_number(columns = c(eja_med, enem_med, ing_med),
+                 decimals = 0, sep_mark=".", dec_mark=",") |>
+  gt::fmt_number(columns = eng_med,
+                 decimals = 1, sep_mark=".", dec_mark=",") |>
+  gt::cols_label(
+    quadrante = "Grupo", n = "Municípios",
+    eja_med = "EJA-EM (média)", enem_med = "ENEM (média)",
+    ing_med = "Ingressantes (média)", eng_med = "Engajamento (média)"
+  )
+
+```
+
+## Exportação para excel
+
+```{r}
+# CSV individuais
+write_csv(base,   "base_funil_RJ_2024.csv")
+write_csv(resumo, "resumo_funil_RJ_2024.csv")
+
+# Excel com múltiplas abas
+write_xlsx(
+  list(
+    base               = base,
+    resumo             = resumo,
+    top_eja            = gt::gt_to_md(top_eja_gt) |> tibble::tibble(tabela_md = _),
+    top_enem           = gt::gt_to_md(top_enem_gt) |> tibble::tibble(tabela_md = _),
+    top_ing            = gt::gt_to_md(top_ing_gt) |> tibble::tibble(tabela_md = _),
+    top_engajamento    = gt::gt_to_md(top_eng_gt) |> tibble::tibble(tabela_md = _),
+    correlacao         = as.data.frame(cor_mat),
+    quadrantes         = quad_tab
+  ),
+  path = "tabelas_funil_RJ_2024.xlsx"
+)
+
+```
