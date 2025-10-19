@@ -6,4 +6,4 @@ Esta pasta reúne os arquivos da Atividade 03 desenvolvida na disciplina **Anál
 - Atividade03_SilvanaDaRochaRodrigues.pdf — relatório final.
 - tabelas_funil_RJ_2024.xlsx — planilha final (saída).
 - 2024_resultados_censo_escolar_final_anexo_I.xlsx - planilha INEP com os resultados do Censo Escolar.
-- 
+- Link_Planilhas_INEP.txt - Link com planilhas INEP com tamanho superior ao permitido pelo GitHub
